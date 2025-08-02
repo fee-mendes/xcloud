@@ -48,6 +48,8 @@ type App struct {
 	transitionPending bool
 	lastShardCount int
 	successCount, failureCount, keyCounter uint64
+	keyPool [][]byte
+	valPool [][]byte
 	
 	// Scaling state
 	scalingPhase ScalingPhase
@@ -477,11 +479,9 @@ func (app *App) updateReactive(state ClusterState) {
 }
 
 func (app *App) sendWrite() {
-	key, val := make([]byte, 16), make([]byte, 512)
 	keyId := atomic.AddUint64(&app.keyCounter, 1) % uint64(app.config.KeyCount)
-	binary.LittleEndian.PutUint64(key, keyId)
-	binary.LittleEndian.PutUint64(key[8:], keyId)
-	rand.Read(val)
+	key := app.keyPool[keyId]
+	val := app.valPool[keyId % uint64(len(app.valPool))]
 	query := fmt.Sprintf("INSERT INTO %s.%s (key, val) VALUES (?, ?)", app.config.KeyspaceName, app.config.TableName)
 	if err := app.session.Query(query, key, val).Exec(); err != nil {
 		atomic.AddUint64(&app.failureCount, 1)
@@ -516,11 +516,30 @@ func (app *App) startMonitors() {
 	}()
 }
 
+func (app *App) initPools(valCount int) {
+	app.keyPool = make([][]byte, app.config.KeyCount)
+	for i := range app.keyPool {
+		key := make([]byte, 16)
+		binary.LittleEndian.PutUint64(key, uint64(i))
+		binary.LittleEndian.PutUint64(key[8:], uint64(i))
+		app.keyPool[i] = key
+	}
+
+	app.valPool = make([][]byte, valCount)
+	for i := range app.valPool {
+		buf := make([]byte, 512)
+		rand.Read(buf)
+		app.valPool[i] = buf
+	}
+
+}
+
 func main() {
 	app := &App{config: parseFlags()}
 	defer func() { if app.session != nil { app.session.Close() } }()
 	
 	app.initDB()
+	app.initPools(1_000_000) // Pre-generate 1M random 512B values
 	if app.config.Mode == "api" { app.initCloudAPI() }
 	app.initCapacity()
 	app.startMonitors()
