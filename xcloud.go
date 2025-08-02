@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"math"
 	"math/rand"
@@ -232,26 +233,41 @@ func (app *App) initCloudAPI() {
 	resp, err := app.apiClient.Do(req)
 	if err != nil { log.Fatalf("API request failed: %v", err) }
 	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		log.Fatalf("Get account API failed with status %d: %s", resp.StatusCode, string(body))
+	}
 	
 	var accountResp struct{ Data struct{ AccountId int `json:"accountId"` } `json:"data"` }
-	json.NewDecoder(resp.Body).Decode(&accountResp)
+	if err := json.NewDecoder(resp.Body).Decode(&accountResp); err != nil || accountResp.Data.AccountId == 0 {
+		log.Fatal("Failed retrieving Cloud account details. Invalid token?")
+	}
 	app.accountId = accountResp.Data.AccountId
 	
 	// Get cluster details
 	url := fmt.Sprintf("https://api.cloud.scylladb.com/account/%d/cluster/%d", app.accountId, app.config.ClusterID)
 	req, _ = http.NewRequest("GET", url, nil)
 	req.Header.Set("Authorization", "Bearer "+app.config.Token)
-	resp, _ = app.apiClient.Do(req)
+	resp, err = app.apiClient.Do(req)
+	if err != nil { log.Fatalf("API request failed: %v", err) } 
 	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		log.Fatalf("Get account API failed with status %d: %s", resp.StatusCode, string(body))
+	}
 	
 	var clusterResp struct{ Data struct{ Cluster struct{ Dc struct{ Id, InstanceId int } } } }
-	json.NewDecoder(resp.Body).Decode(&clusterResp)
+	if err := json.NewDecoder(resp.Body).Decode(&clusterResp); err != nil || clusterResp.Data.Cluster.Dc.Id == 0 {
+		log.Fatal("Unable to retrieve datacenter or instance Id. Invalid Cluster ID?\n" +
+		    "Note: this tool does not support multi-region clusters")
+	}
 	app.dcId = clusterResp.Data.Cluster.Dc.Id
 	app.instanceTypeId = clusterResp.Data.Cluster.Dc.InstanceId
 	
 	fmt.Printf("[Cloud API] AccountID: %d, DCID: %d, InstanceID: %d\n", app.accountId, app.dcId, app.instanceTypeId)
 }
 
+// TODO: Handle errors, we just accept whatever :(
 func (app *App) scaleCluster(nodes int) {
 	url := fmt.Sprintf("https://api.cloud.scylladb.com/account/%d/cluster/%d/resize", app.accountId, app.config.ClusterID)
 	reqData := map[string]interface{}{
