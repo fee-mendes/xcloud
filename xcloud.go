@@ -48,7 +48,6 @@ type App struct {
 	transitionPending bool
 	lastShardCount int
 	successCount, failureCount, keyCounter uint64
-	keyPool [][]byte
 	valPool [][]byte
 	
 	// Scaling state
@@ -480,7 +479,10 @@ func (app *App) updateReactive(state ClusterState) {
 
 func (app *App) sendWrite() {
 	keyId := atomic.AddUint64(&app.keyCounter, 1) % uint64(app.config.KeyCount)
-	key := app.keyPool[keyId]
+	key := make([]byte, 16)
+	binary.LittleEndian.PutUint64(key, keyId)
+	binary.LittleEndian.PutUint64(key[8:], keyId)
+
 	val := app.valPool[keyId % uint64(len(app.valPool))]
 	query := fmt.Sprintf("INSERT INTO %s.%s (key, val) VALUES (?, ?)", app.config.KeyspaceName, app.config.TableName)
 	if err := app.session.Query(query, key, val).Exec(); err != nil {
@@ -517,21 +519,12 @@ func (app *App) startMonitors() {
 }
 
 func (app *App) initPools(valCount int) {
-	app.keyPool = make([][]byte, app.config.KeyCount)
-	for i := range app.keyPool {
-		key := make([]byte, 16)
-		binary.LittleEndian.PutUint64(key, uint64(i))
-		binary.LittleEndian.PutUint64(key[8:], uint64(i))
-		app.keyPool[i] = key
-	}
-
 	app.valPool = make([][]byte, valCount)
 	for i := range app.valPool {
 		buf := make([]byte, 512)
 		rand.Read(buf)
 		app.valPool[i] = buf
 	}
-
 }
 
 func main() {
